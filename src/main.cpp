@@ -112,6 +112,7 @@ void setup() {
   influxServo.attach(influxServoPin);
   outfluxServo.attach(outfluxServoPin);
 
+  flowRateSensorSetup();
   // Set ESP32 as a Wi-Fi Station
   WiFi.mode(WIFI_STA);
  
