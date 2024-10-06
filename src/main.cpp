@@ -7,19 +7,38 @@
 #include <Arduino.h>
 #include <esp_now.h>
 #include <WiFi.h>
+#include <ESP32Servo.h>
 #include "main.h"
+
+// Define Servo Pins
+const int influxServoPin = 14;  // Replace with your actual pin number
+const int outfluxServoPin = 27; // Replace with your actual pin number
+
+// Create Servo Objects
+Servo influxServo;
+Servo outfluxServo;
  
+// flow rate sensor stuff
+const int sensorInterrupt = 0;  // interrupt 0 (GPIO0)
+const int sensorPin = 16;       // GPIO16 (can be modified to suit your setup)
+const int solenoidValve = 5;    // GPIO5
+const unsigned int SetPoint = 400; // 400 milliliters
+/* The hall-effect flow sensor outputs pulses per second per litre/minute of flow. */
+const float calibrationFactor = 90; // Change according to your datasheet
+volatile byte pulseCount = 0;
 // sensor data
 float flowRate = 0.0;
 unsigned int flowMilliLitres = 0;
 unsigned long totalMilliLitres = 0;
+unsigned long oldTime = 0;
+
  
 // MAC Address of main esp32
 uint8_t mainAddress[] = {0xCC, 0xDB, 0xA7, 0x2F, 0x49, 0x4C};
- 
+
 // Define a data structure -- maybe call this send data structure or module send data structure
 // main 0, modules 1 - 5
-#define MODULE 2
+#define MODULE 1
 #if MODULE == 1
 uint8_t module_number = 1; // FC:E8:C0:7C:CC:10
 #else
@@ -81,6 +100,8 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   Serial.print("Outflux open: ");
   Serial.println(myMainData.outfluxOpen);
   Serial.println();
+
+  controlServos();
 }
  
 void setup() {
@@ -88,6 +109,9 @@ void setup() {
   // Set up Serial Monitor
   Serial.begin(115200);
  
+  influxServo.attach(influxServoPin);
+  outfluxServo.attach(outfluxServoPin);
+
   // Set ESP32 as a Wi-Fi Station
   WiFi.mode(WIFI_STA);
  
@@ -139,5 +163,73 @@ void loop() {
 }
 
 void readFlowRateSensor() {
-  return;
+  if ((millis() - oldTime) > 500) { // Only process counters twice per second
+    // Disable the interrupt while calculating flow rate and sending the value to the host
+    detachInterrupt(digitalPinToInterrupt(sensorPin));
+
+    // Calculate flow rate and volume
+    if (millis() != oldTime) {  // Prevent division by zero
+      flowRate = ((1000.0 / (millis() - oldTime)) * pulseCount) / calibrationFactor;
+    }
+
+    oldTime = millis();
+
+    flowMilliLitres = (flowRate / 60) * 1000;
+    totalMilliLitres += flowMilliLitres;
+
+    // Print the flow rate and total volume
+    Serial.print("Flow rate: ");
+    Serial.print(flowMilliLitres);
+    Serial.print(" mL/Second\t");
+    Serial.print("Output Liquid Quantity: ");
+    Serial.print(totalMilliLitres);
+    Serial.println(" mL");
+
+    if (totalMilliLitres > SetPoint) {
+      SetSolenoidValve();
+    }
+
+    // Reset the pulse counter
+    pulseCount = 0;
+
+    // Enable the interrupt again
+    attachInterrupt(digitalPinToInterrupt(sensorPin), pulseCounter, FALLING);
+  }
+}
+
+void controlServos() {
+  // Control influx servo
+  if (myMainData.influxOpen) {
+    influxServo.write(0); // Open position
+  } else {
+    influxServo.write(90); // Closed position
+  }
+
+  // Control outflux servo
+  if (myMainData.outfluxOpen) {
+    outfluxServo.write(0); // Open position
+  } else {
+    outfluxServo.write(90); // Closed position
+  }
+}
+
+void flowRateSensorSetup() {
+  // Initialize a serial connection for reporting values to the host
+  pinMode(solenoidValve, OUTPUT);
+  digitalWrite(solenoidValve, HIGH);
+  pinMode(sensorPin, INPUT);
+  digitalWrite(sensorPin, HIGH);
+
+  /* The Hall-effect sensor is connected to GPIO16 using interrupt 0.
+     Configured to trigger on a FALLING state change (transition from HIGH to LOW state) */
+  attachInterrupt(digitalPinToInterrupt(sensorPin), pulseCounter, FALLING);
+}
+
+void pulseCounter() {
+  // Increment the pulse counter
+  pulseCount++;
+}
+
+void SetSolenoidValve() {
+  digitalWrite(solenoidValve, LOW);
 }
